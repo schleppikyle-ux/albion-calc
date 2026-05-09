@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { 
   Sword, 
   Shield, 
@@ -14,15 +14,40 @@ import {
   RefreshCw,
   Search,
   ShoppingCart,
-  LayoutDashboard
+  LayoutDashboard,
+  Skull
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { FAME_DATA, getCumulativeFame100, getCumulativeFame120, calculateTotalIP, ITEM_POWER, ItemSpecNode, SpecNodeType } from './constants';
 import { fetchPrices, MarketPrice } from './services/marketService';
+import { fetchLatestKills, AlbionKill, AlbionEquipmentItem } from './services/albionService';
 import { POPULAR_ITEMS, AlbionItem } from './data/items';
 import type { LevelType } from './types';
 
-type ViewMode = 'CALCULATOR' | 'MARKET' | 'FLIPPER';
+type ViewMode = 'CALCULATOR' | 'MARKET' | 'FLIPPER' | 'KILLBOARD';
+
+const ItemIcon: React.FC<{ item: AlbionEquipmentItem, eventId: number, slot: string }> = ({ item, eventId, slot }) => {
+  const [loaded, setLoaded] = useState(false);
+  
+  return (
+    <div className="w-8 h-8 rounded bg-black/40 border border-white/5 p-0.5 flex-none group/item relative overflow-hidden">
+      {!loaded && (
+        <div className="absolute inset-0 bg-white/5 animate-pulse flex items-center justify-center">
+          <div className="w-1/2 h-1/2 rounded-full border border-white/10" />
+        </div>
+      )}
+      <img 
+        src={`https://render.albiononline.com/v1/item/${item.Type}.png?size=32&quality=${item.Quality || 1}`} 
+        alt={item.Type}
+        className={`w-full h-full object-contain transition-opacity duration-300 ${loaded ? 'opacity-100' : 'opacity-0'}`}
+        onLoad={() => setLoaded(true)}
+        onError={(e) => (e.currentTarget.style.display = 'none')}
+        referrerPolicy="no-referrer"
+        loading="lazy"
+      />
+    </div>
+  );
+};
 
 export default function App() {
   const [viewMode, setViewMode] = useState<ViewMode>('CALCULATOR');
@@ -36,9 +61,15 @@ export default function App() {
   const [isLoadingMarket, setIsLoadingMarket] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [visibleFlipsCount, setVisibleFlipsCount] = useState(20);
+  const [marketSortField, setMarketSortField] = useState<'name' | 'tier' | 'enchantment' | 'price'>('name');
+  const [marketSortOrder, setMarketSortOrder] = useState<'asc' | 'desc'>('asc');
+
+  const [kills, setKills] = useState<AlbionKill[]>([]);
+  const [isLoadingKills, setIsLoadingKills] = useState(false);
+  const [visibleKillsCount, setVisibleKillsCount] = useState(5);
 
   // Flipper Sort State
-  const [flipperSortField, setFlipperSortField] = useState<'roi' | 'buyPrice' | 'profit'>('roi');
+  const [flipperSortField, setFlipperSortField] = useState<'roi' | 'buyPrice' | 'profit' | 'tier' | 'enchantment'>('roi');
   const [flipperSortOrder, setFlipperSortOrder] = useState<'asc' | 'desc'>('desc');
 
   // IP Preview State
@@ -73,23 +104,37 @@ export default function App() {
     setIsLoadingMarket(false);
   };
 
+  const loadKills = async (isLoadMore = false) => {
+    setIsLoadingKills(true);
+    try {
+      const offset = isLoadMore ? kills.length : 0;
+      const latestKills = await fetchLatestKills(server, 50, offset);
+      
+      if (isLoadMore) {
+        setKills(prev => [...prev, ...latestKills]);
+        setVisibleKillsCount(prev => prev + 10);
+      } else {
+        setKills(latestKills);
+        setVisibleKillsCount(10);
+      }
+    } catch (error) {
+      console.error('Failed to load kills:', error);
+    } finally {
+      setIsLoadingKills(false);
+    }
+  };
+
   // Fetch prices for calculator (Tome of Insight) and initially for market
   useEffect(() => {
     loadMarketData();
-  }, [server]);
+    if (viewMode === 'KILLBOARD') loadKills();
+  }, [server, viewMode]);
 
   const tomePrice = useMemo(() => {
     const tomePrices = marketPrices.filter(p => p.item_id === 'T4_TOME_TRAINING_MANUAL' && p.sell_price_min > 0);
     if (!tomePrices.length) return 20000;
     return Math.min(...tomePrices.map(p => p.sell_price_min));
   }, [marketPrices]);
-
-  const filteredItems = useMemo(() => {
-    return POPULAR_ITEMS.filter(item => 
-      item.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      item.id.toLowerCase().includes(searchQuery.toLowerCase())
-    ).slice(0, 100); // Pagination/Limit for performance
-  }, [searchQuery]);
 
   const getItemMarketData = (itemId: string) => {
     let itemPrices = marketPrices.filter(p => p.item_id === itemId && p.sell_price_min > 0);
@@ -106,6 +151,39 @@ export default function App() {
     
     return { minSell, maxBuy, avg, city: itemPrices[0].city };
   };
+
+  const filteredItems = useMemo(() => {
+    let items = POPULAR_ITEMS.filter(item => 
+      item.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      item.id.toLowerCase().includes(searchQuery.toLowerCase())
+    );
+
+    return items.sort((a, b) => {
+      let valA: any;
+      let valB: any;
+
+      if (marketSortField === 'name') {
+        valA = a.name;
+        valB = b.name;
+      } else if (marketSortField === 'tier') {
+        valA = a.tier;
+        valB = b.tier;
+      } else if (marketSortField === 'enchantment') {
+        valA = a.id.includes('@') ? parseInt(a.id.split('@')[1]) : 0;
+        valB = b.id.includes('@') ? parseInt(b.id.split('@')[1]) : 0;
+      } else if (marketSortField === 'price') {
+        const dataA = getItemMarketData(a.id);
+        const dataB = getItemMarketData(b.id);
+        valA = dataA?.minSell || 0;
+        valB = dataB?.minSell || 0;
+      }
+
+      if (typeof valA === 'string' && typeof valB === 'string') {
+        return marketSortOrder === 'asc' ? valA.localeCompare(valB) : valB.localeCompare(valA);
+      }
+      return marketSortOrder === 'asc' ? ((valA as number) - (valB as number)) : ((valB as number) - (valA as number));
+    }).slice(0, 100);
+  }, [searchQuery, marketSortField, marketSortOrder, marketPrices, selectedCity]); // Added selectedCity to dep array since price depends on it
 
   const calculation = useMemo(() => {
     const start = Math.max(1, Math.min(120, currentLevel));
@@ -207,6 +285,9 @@ export default function App() {
           const roi = (profit / buyPrice) * 100;
 
           if (roi > 0) { 
+            // Extract enchantment from ID (e.g. T4_ITEM@1 -> 1)
+            const enchantment = item.id.includes('@') ? parseInt(item.id.split('@')[1]) : 0;
+            
             flips.push({
               item,
               buyCity,
@@ -216,6 +297,8 @@ export default function App() {
               profit,
               roi,
               quality: q,
+              tier: item.tier,
+              enchantment,
               isBlackMarket: true
             });
           }
@@ -234,7 +317,9 @@ export default function App() {
     }).slice(0, 500);
   }, [marketPrices, flipperSortField, flipperSortOrder]);
 
-  const formatNumber = (num: number) => {
+  const formatNumber = (val: any) => {
+    const num = Number(val);
+    if (val === undefined || val === null || isNaN(num)) return '0';
     if (num >= 1_000_000_000) return (num / 1_000_000_000).toFixed(2) + 'B';
     if (num >= 1_000_000) return (num / 1_000_000).toFixed(2) + 'M';
     if (num >= 1_000) return (num / 1_000).toFixed(1) + 'K';
@@ -268,6 +353,12 @@ export default function App() {
               className={`pb-0.5 transition-all outline-none ${viewMode === 'FLIPPER' ? 'text-amber-500 border-b border-amber-500' : 'text-gray-500 hover:text-white'}`}
             >
               BM Flipper
+            </button>
+            <button 
+              onClick={() => setViewMode('KILLBOARD')}
+              className={`pb-0.5 transition-all outline-none ${viewMode === 'KILLBOARD' ? 'text-amber-500 border-b border-amber-500' : 'text-gray-500 hover:text-white'}`}
+            >
+              Killboard
             </button>
           </nav>
           <div className="flex items-center gap-3 border-l border-white/10 pl-6 h-6">
@@ -324,6 +415,17 @@ export default function App() {
                 >
                   <ArrowRightLeft className="w-4 h-4" />
                   <span className="uppercase tracking-tight">Black Market Scout</span>
+                </button>
+                <button
+                  onClick={() => setViewMode('KILLBOARD')}
+                  className={`w-full p-2 text-xs flex items-center gap-3 transition-all rounded ${
+                    viewMode === 'KILLBOARD' 
+                      ? 'bg-white/5 border-l-2 border-amber-500 text-white font-bold' 
+                      : 'text-gray-500 hover:text-white hover:bg-white/5'
+                  }`}
+                >
+                  <Skull className="w-4 h-4" />
+                  <span className="uppercase tracking-tight">Killboard HUD</span>
                 </button>
               </div>
             </div>
@@ -834,9 +936,38 @@ export default function App() {
                     <table className="w-full text-left text-[11px] font-mono border-collapse">
                       <thead>
                         <tr className="text-[9px] text-gray-600 uppercase tracking-tighter font-black bg-[#0e1013] border-b border-white/5">
-                          <th className="p-4">Item Catalog ID</th>
-                          <th className="p-4">Tier</th>
-                          <th className="p-4">Min Sell Price</th>
+                          <th className="p-4 cursor-pointer hover:text-amber-500 transition-all select-none" onClick={() => {
+                            if (marketSortField === 'name') setMarketSortOrder(marketSortOrder === 'asc' ? 'desc' : 'asc');
+                            else { setMarketSortField('name'); setMarketSortOrder('asc'); }
+                          }}>
+                            <div className="flex items-center gap-1">
+                              Item Catalog ID {marketSortField === 'name' && (marketSortOrder === 'asc' ? '↑' : '↓')}
+                            </div>
+                          </th>
+                          <th className="p-4 cursor-pointer hover:text-amber-500 transition-all select-none" onClick={() => {
+                            if (marketSortField === 'tier') setMarketSortOrder(marketSortOrder === 'asc' ? 'desc' : 'asc');
+                            else { setMarketSortField('tier'); setMarketSortOrder('asc'); }
+                          }}>
+                            <div className="flex items-center gap-1">
+                              Tier {marketSortField === 'tier' && (marketSortOrder === 'asc' ? '↑' : '↓')}
+                            </div>
+                          </th>
+                          <th className="p-4 cursor-pointer hover:text-amber-500 transition-all select-none" onClick={() => {
+                            if (marketSortField === 'enchantment') setMarketSortOrder(marketSortOrder === 'asc' ? 'desc' : 'asc');
+                            else { setMarketSortField('enchantment'); setMarketSortOrder('asc'); }
+                          }}>
+                            <div className="flex items-center gap-1">
+                              Ench {marketSortField === 'enchantment' && (marketSortOrder === 'asc' ? '↑' : '↓')}
+                            </div>
+                          </th>
+                          <th className="p-4 cursor-pointer hover:text-amber-500 transition-all select-none" onClick={() => {
+                            if (marketSortField === 'price') setMarketSortOrder(marketSortOrder === 'asc' ? 'desc' : 'asc');
+                            else { setMarketSortField('price'); setMarketSortOrder('asc'); }
+                          }}>
+                            <div className="flex items-center gap-1">
+                              Min Sell Price {marketSortField === 'price' && (marketSortOrder === 'asc' ? '↑' : '↓')}
+                            </div>
+                          </th>
                           <th className="p-4">Market Location</th>
                           <th className="p-4 text-center">HUD Avg Value</th>
                           <th className="p-4 text-right">Liquidity</th>
@@ -855,6 +986,9 @@ export default function App() {
                               </td>
                               <td className="p-4">
                                 <span className="px-1.5 py-0.5 bg-zinc-800 text-[10px] text-white rounded font-bold border border-white/5">T{item.tier}</span>
+                              </td>
+                              <td className="p-4">
+                                <span className="text-[10px] text-gray-400 font-bold">.{item.id.includes('@') ? item.id.split('@')[1] : '0'}</span>
                               </td>
                               <td className="p-4 text-emerald-400 font-bold">
                                 {data ? formatNumber(data.minSell) : <span className="text-gray-800">—</span>}
@@ -881,7 +1015,7 @@ export default function App() {
                   </div>
                 </div>
               </motion.div>
-            ) : (
+            ) : viewMode === 'FLIPPER' ? (
               <motion.div 
                 key="flipper"
                 initial={{ opacity: 0, scale: 0.98 }}
@@ -935,6 +1069,18 @@ export default function App() {
                         className={`px-3 py-1.5 rounded text-[10px] font-black uppercase transition-all ${flipperSortField === 'profit' ? 'bg-amber-500 text-black shadow-lg shadow-amber-500/20' : 'bg-white/5 text-gray-400 hover:text-white'}`}
                        >
                          Silver Earned
+                       </button>
+                       <button 
+                        onClick={() => setFlipperSortField('tier')}
+                        className={`px-3 py-1.5 rounded text-[10px] font-black uppercase transition-all ${flipperSortField === 'tier' ? 'bg-amber-500 text-black shadow-lg shadow-amber-500/20' : 'bg-white/5 text-gray-400 hover:text-white'}`}
+                       >
+                         Tier
+                       </button>
+                       <button 
+                        onClick={() => setFlipperSortField('enchantment')}
+                        className={`px-3 py-1.5 rounded text-[10px] font-black uppercase transition-all ${flipperSortField === 'enchantment' ? 'bg-amber-500 text-black shadow-lg shadow-amber-500/20' : 'bg-white/5 text-gray-400 hover:text-white'}`}
+                       >
+                         Enchant
                        </button>
                     </div>
 
@@ -1019,6 +1165,154 @@ export default function App() {
                    </div>
                  )}
               </motion.div>
+            ) : (
+               <motion.div 
+                 key="killboard"
+                 initial={{ opacity: 0, scale: 0.98 }}
+                 animate={{ opacity: 1, scale: 1 }}
+                 exit={{ opacity: 0 }}
+                 className="col-span-12 flex flex-col gap-6"
+               >
+                  <div className="bg-[#121417] border border-white/10 rounded-lg p-6 flex items-center justify-between shadow-xl relative overflow-hidden">
+                    <div className="absolute top-0 right-0 p-4 opacity-5">
+                      <Skull className="w-24 h-24" />
+                    </div>
+                    <div className="z-10">
+                      <h2 className="text-xl font-black italic uppercase tracking-tighter text-white">Latest <span className="text-amber-500 underline decoration-amber-500/30">High Fame</span> Kills</h2>
+                      <p className="text-[10px] text-gray-500 uppercase font-black mt-1">Live tracking of notable PvP events on {server}</p>
+                    </div>
+                    <div className="flex items-center gap-3 bg-black/40 p-2 rounded-xl border border-white/5 z-10">
+                       <button 
+                        onClick={() => {
+                          loadKills();
+                          setVisibleKillsCount(5);
+                        }}
+                        disabled={isLoadingKills}
+                        className={`p-2 rounded-lg bg-amber-500 text-black hover:bg-amber-400 transition-all group/refresh ${isLoadingKills ? 'opacity-50 cursor-not-allowed' : ''}`}
+                        title="Refresh Killboard"
+                       >
+                         <RefreshCw className={`w-3.5 h-3.5 ${isLoadingKills ? 'animate-spin' : 'group-hover/refresh:rotate-180 transition-transform duration-500'}`} />
+                       </button>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 gap-4">
+                    {isLoadingKills && kills.length === 0 ? (
+                      <div className="p-20 flex flex-col items-center justify-center text-gray-600 gap-4">
+                        <RefreshCw className="w-8 h-8 animate-spin" />
+                        <span className="text-[10px] font-black uppercase tracking-widest">Intercepting Kill Feeds...</span>
+                      </div>
+                    ) : kills.length === 0 ? (
+                      <div className="p-20 flex flex-col items-center justify-center text-gray-600 gap-4 bg-red-500/5 rounded-xl border border-red-500/10">
+                        <Skull className="w-8 h-8 text-red-500/50" />
+                        <div className="flex flex-col items-center">
+                          <span className="text-[10px] font-black uppercase tracking-widest text-red-500/70">Terminal Connection Error</span>
+                          <span className="text-[9px] text-gray-500 mt-1">THE ALBION API IS CURRENTLY UNREACHABLE OR BLOCKING REQUESTS</span>
+                        </div>
+                        <button 
+                          onClick={() => loadKills()}
+                          className="mt-4 px-6 py-2 bg-white/5 border border-white/10 text-[10px] font-black uppercase rounded-lg hover:bg-white/10 transition-all"
+                        >
+                          Retry Uplink
+                        </button>
+                      </div>
+                    ) : (
+                      kills.slice(0, visibleKillsCount).map((kill, idx) => (
+                        <motion.div 
+                          key={kill.EventId}
+                          initial={{ opacity: 0, x: -20 }}
+                          animate={{ opacity: 1, x: 0 }}
+                          transition={{ delay: idx * 0.05 }}
+                          className="bg-[#121417] border border-white/10 rounded-xl overflow-hidden hover:border-amber-500/30 transition-all group"
+                        >
+                          <div className="flex flex-col">
+                            <div className="flex items-stretch border-b border-white/5">
+                              {/* Killer */}
+                              <div className="flex-1 p-4 bg-emerald-500/[0.02] flex flex-col justify-center border-r border-white/5">
+                                <div className="text-[8px] text-emerald-500 uppercase font-black mb-1">Killer</div>
+                                <div className="flex items-center gap-3">
+                                  <div className="text-lg font-black text-white italic truncate max-w-[120px]">{kill.Killer?.Name || 'Unknown'}</div>
+                                  <div className="text-[10px] font-mono text-gray-500">
+                                    {Math.round(kill.Killer?.AverageItemPower || kill.Killer?.ItemPower || 0)} IP
+                                  </div>
+                                </div>
+                                <div className="text-[9px] text-gray-600 font-bold uppercase mt-1 truncate">
+                                  {kill.Killer?.GuildName ? `[${kill.Killer.GuildName}]` : 'No Guild'}
+                                </div>
+                              </div>
+
+                              {/* Center Divider / Fame */}
+                              <div className="w-32 bg-black/40 flex flex-col items-center justify-center border-x border-white/5 relative shrink-0">
+                                <div className="text-[8px] text-gray-500 uppercase font-black mb-1">Fame</div>
+                                <div className="text-sm font-mono font-black text-amber-500">
+                                  +{formatNumber(kill.TotalVictimFame || kill.Victim?.DeathFame || kill.Victim?.Fame || 0)}
+                                </div>
+                                <div className="text-[7px] text-gray-700 font-mono mt-1 text-center">EVENT ID: {kill.EventId}</div>
+                                <div className="text-[8px] text-red-500 font-mono font-bold mt-1 text-center bg-red-500/10 px-1 rounded">
+                                  {kill.TimeStamp.replace('T', ' ').split('.')[0]} UTC
+                                </div>
+                              </div>
+
+                              {/* Victim */}
+                              <div className="flex-1 p-4 bg-red-500/[0.02] flex flex-col justify-center text-right border-l border-white/5">
+                                <div className="text-[8px] text-red-500 uppercase font-black mb-1">Victim</div>
+                                <div className="flex items-center justify-end gap-3">
+                                  <div className="text-[10px] font-mono text-gray-500">
+                                    {Math.round(kill.Victim?.AverageItemPower || kill.Victim?.ItemPower || 0)} IP
+                                  </div>
+                                  <div className="text-lg font-black text-white italic truncate max-w-[120px]">{kill.Victim?.Name || 'Unknown'}</div>
+                                </div>
+                                <div className="text-[9px] text-gray-600 font-bold uppercase mt-1 truncate text-right">
+                                  {kill.Victim?.GuildName ? `[${kill.Victim.GuildName}]` : 'No Guild'}
+                                </div>
+                              </div>
+                            </div>
+
+                            {/* Gear Displays */}
+                            <div className="flex justify-between items-center px-4 py-2 bg-black/30">
+                              {/* Killer Gear */}
+                              <div className="flex gap-1 overflow-x-auto pb-1 max-w-[42%] scrollbar-hide">
+                                {kill.Killer?.Equipment && (Object.entries(kill.Killer.Equipment) as [string, AlbionEquipmentItem | null][])
+                                  .filter((entry): entry is [string, AlbionEquipmentItem] => !!(entry[1] && entry[1].Type))
+                                  .map(([slot, item]) => (
+                                    <ItemIcon key={`killer-gear-${kill.EventId}-${slot}`} item={item} eventId={kill.EventId} slot={slot} />
+                                  ))}
+                              </div>
+
+                              <div className="hidden md:block text-[8px] text-gray-700 uppercase font-black tracking-[0.2em] opacity-30">VS</div>
+
+                              {/* Victim Gear */}
+                              <div className="flex gap-1 overflow-x-auto pb-1 max-w-[42%] justify-end scrollbar-hide">
+                                {kill.Victim?.Equipment && (Object.entries(kill.Victim.Equipment) as [string, AlbionEquipmentItem | null][])
+                                  .filter((entry): entry is [string, AlbionEquipmentItem] => !!(entry[1] && entry[1].Type))
+                                  .map(([slot, item]) => (
+                                    <ItemIcon key={`victim-gear-${kill.EventId}-${slot}`} item={item} eventId={kill.EventId} slot={slot} />
+                                  ))}
+                              </div>
+                            </div>
+                          </div>
+                        </motion.div>
+                      ))
+                    )}
+                  </div>
+
+                  <div className="flex justify-center mt-2">
+                     <button 
+                       onClick={() => {
+                         if (visibleKillsCount + 10 > kills.length) {
+                           loadKills(true);
+                         } else {
+                           setVisibleKillsCount(prev => prev + 10);
+                         }
+                       }}
+                       disabled={isLoadingKills}
+                       className="px-8 py-3 bg-white/5 border border-white/10 text-white text-[10px] font-black uppercase rounded-xl hover:bg-white/10 hover:border-amber-500/30 transition-all flex items-center gap-2 group/more disabled:opacity-50"
+                     >
+                       {isLoadingKills ? 'Loading...' : 'Load Older Reports'}
+                       <ChevronRight className={`w-4 h-4 text-amber-500 group-hover/more:translate-x-1 transition-transform ${isLoadingKills ? 'animate-spin' : ''}`} />
+                     </button>
+                  </div>
+               </motion.div>
             )}
           </AnimatePresence>
         </main>
