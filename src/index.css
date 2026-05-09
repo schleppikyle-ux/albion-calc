@@ -1,0 +1,49 @@
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+
+  @keyframes spin-slow {
+    from {
+      transform: rotate(0deg);
+    }
+    to {
+      transform: rotate(360deg);
+    }
+  }
+  --animate-spin-slow: spin-slow 8s linear infinite;
+}
+
+@layer base {
+  body {
+    @apply bg-[#0a0b0d] text-[#e1e1e1] antialiased h-screen overflow-hidden;
+  }
+}
+
+/* Custom Range Slider - High Density */
+input[type="range"].account-slider {
+  @apply appearance-none bg-zinc-800/50 rounded-full h-1 transition-all border border-white/5;
+}
+
+input[type="range"].account-slider::-webkit-slider-thumb {
+  @apply appearance-none w-3.5 h-3.5 bg-amber-500 rounded-sm cursor-pointer shadow-lg shadow-amber-500/20 border-2 border-zinc-900 transition-transform hover:scale-110 active:scale-95;
+}
+
+input[type="range"].account-slider::-moz-range-thumb {
+  @apply w-3.5 h-3.5 bg-amber-500 border-2 border-zinc-900 rounded-sm cursor-pointer shadow-lg shadow-amber-500/20 transition-transform hover:scale-110 active:scale-95;
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 4px;
+}
+
+::-webkit-scrollbar-track {
+  @apply bg-transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  @apply bg-zinc-800 rounded-full border-2 border-[#0a0b0d] hover:bg-amber-500/50;
+}
